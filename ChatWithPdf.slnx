@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="ChatWithPdf.Api/ChatWithPdf.Api.csproj" />
+  <Project Path="ChatWithPdf.Application/ChatWithPdf.Application.csproj" />
+  <Project Path="ChatWithPdf.Domain/ChatWithPdf.Domain.csproj" />
+  <Project Path="ChatWithPdf.Infrastructure/ChatWithPdf.Infrastructure.csproj" />
+</Solution>
