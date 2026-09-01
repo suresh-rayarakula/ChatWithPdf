@@ -13,6 +13,7 @@ This project is designed for hands-on learning: PDF extraction, chunking, embedd
 - [Solution Structure](#solution-structure)
 - [Technology Stack](#technology-stack)
 - [Prerequisites](#prerequisites)
+- [Database Setup (PostgreSQL + pgvector)](#database-setup-postgresql--pgvector)
 - [Getting Started](#getting-started)
 - [Configuration](#configuration)
 - [Running the Application](#running-the-application)
@@ -98,7 +99,6 @@ The LLM never sees the full PDF. It only receives the **top-K most semantically 
 ```
 ChatWithPdf/
 ├── ChatWithPdf.sln
-├── docker-compose.yml
 ├── README.md
 │
 ├── ChatWithPdf.Api/                    # Web API (entry point)
@@ -167,7 +167,6 @@ ChatWithPdf/
 | Vector search | pgvector + HNSW index |
 | PDF parsing | UglyToad.PdfPig |
 | Embeddings & chat | OpenAI API (`text-embedding-3-small`, `gpt-4o-mini`) |
-| Containerization | Docker Compose |
 
 ### Key NuGet packages
 
@@ -190,7 +189,7 @@ Install the following before running the project:
    dotnet --version
    ```
 
-2. **[Docker Desktop](https://www.docker.com/products/docker-desktop/)** — for PostgreSQL with pgvector
+2. **PostgreSQL 15+ with pgvector** — see [Database Setup](#database-setup-postgresql--pgvector) below
 
 3. **OpenAI API key** — from [platform.openai.com](https://platform.openai.com/)
 
@@ -201,27 +200,123 @@ Install the following before running the project:
 
 ---
 
+## Database Setup (PostgreSQL + pgvector)
+
+The application requires **PostgreSQL** with the **pgvector** extension enabled. Docker is not required — install PostgreSQL directly on your machine or use a cloud provider.
+
+### Option A: Local PostgreSQL on Windows (recommended)
+
+#### Step 1 — Install PostgreSQL
+
+1. Download the installer from [postgresql.org/download/windows](https://www.postgresql.org/download/windows/)
+2. Run the installer (PostgreSQL 16 or 17 recommended)
+3. Note the **port** (default `5432`), **username** (default `postgres`), and **password** you set during installation
+4. Ensure the PostgreSQL service is running:
+   ```powershell
+   Get-Service -Name postgresql*
+   ```
+
+#### Step 2 — Install pgvector extension
+
+pgvector must be installed separately for your PostgreSQL version.
+
+**Using pre-built binaries (easiest on Windows):**
+
+1. Download the pgvector release matching your PostgreSQL version from [github.com/pgvector/pgvector/releases](https://github.com/pgvector/pgvector/releases)
+2. Copy the files into your PostgreSQL installation directory:
+   - `vector.dll` → `C:\Program Files\PostgreSQL\17\lib\`
+   - `vector.control` and `vector--*.sql` → `C:\Program Files\PostgreSQL\17\share\extension\`
+
+**Or build from source** — follow the [pgvector installation guide](https://github.com/pgvector/pgvector#installation).
+
+#### Step 3 — Create the database
+
+Open **pgAdmin** (installed with PostgreSQL) or **psql** and run:
+
+```sql
+CREATE DATABASE chatwithpdf;
+
+\c chatwithpdf
+
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+Using psql from PowerShell:
+
+```powershell
+psql -U postgres -c "CREATE DATABASE chatwithpdf;"
+psql -U postgres -d chatwithpdf -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+Verify the extension is enabled:
+
+```sql
+SELECT * FROM pg_extension WHERE extname = 'vector';
+```
+
+#### Step 4 — Update the connection string
+
+Edit `ChatWithPdf.Api/appsettings.json` with your credentials:
+
+```json
+"ConnectionStrings": {
+  "DefaultConnection": "Host=localhost;Port=5432;Database=chatwithpdf;Username=postgres;Password=YOUR_PASSWORD"
+}
+```
+
+---
+
+### Option B: Cloud PostgreSQL (no local install)
+
+Use any hosted PostgreSQL that supports pgvector:
+
+| Provider | Notes |
+|----------|-------|
+| [Supabase](https://supabase.com/) | pgvector enabled by default |
+| [Neon](https://neon.tech/) | Enable pgvector in SQL editor |
+| Azure Database for PostgreSQL | Enable `vector` extension via portal |
+
+1. Create a database on your chosen provider
+2. Enable the extension (if not already on):
+   ```sql
+   CREATE EXTENSION IF NOT EXISTS vector;
+   ```
+3. Copy the provider's connection string into `appsettings.json` or user secrets:
+   ```powershell
+   dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Host=...;Database=...;Username=...;Password=..."
+   ```
+
+---
+
+### Option C: Existing PostgreSQL server
+
+If you already have PostgreSQL running (on a VM, NAS, or company server):
+
+1. Install pgvector on that instance
+2. Create the `chatwithpdf` database
+3. Run `CREATE EXTENSION vector;`
+4. Point the connection string at that server
+
+---
+
+### What the app does with the database
+
+- On startup, EF Core **automatically applies migrations** (creates tables, indexes, and the `vector` extension annotation)
+- You only need to ensure PostgreSQL is running and the `vector` extension is available before starting the API
+
+---
+
 ## Getting Started
 
-### 1. Clone or open the project
+### 1. Open the project
 
 ```powershell
 cd "D:\Projects\AI RAG"
 ```
 
-### 2. Start PostgreSQL with pgvector
+### 2. Set up PostgreSQL
 
-```powershell
-docker compose up -d
-```
-
-Verify the container is running:
-
-```powershell
-docker ps
-```
-
-Expected container: `chatwithpdf-postgres` on port `5432`.
+Complete the [Database Setup](#database-setup-postgresql--pgvector) steps above before continuing.
 
 ### 3. Configure OpenAI API key
 
@@ -302,13 +397,16 @@ All settings live in `ChatWithPdf.Api/appsettings.json`:
 ### Quick start (full sequence)
 
 ```powershell
-# Terminal 1 — database
-docker compose up -d
+# 1. Ensure PostgreSQL is running (Windows service)
+Get-Service -Name postgresql*
 
-# Terminal 2 — API
+# 2. Build and run the API
 cd "D:\Projects\AI RAG"
+dotnet build
 dotnet run --project ChatWithPdf.Api
 ```
+
+On first run, EF Core creates all tables and indexes automatically.
 
 ### Test with the included HTTP file
 
@@ -545,9 +643,18 @@ dotnet ef migrations add YourMigrationName `
 
 ### Reset the database (development only)
 
+Drop and recreate the database in psql:
+
+```sql
+DROP DATABASE IF EXISTS chatwithpdf;
+CREATE DATABASE chatwithpdf;
+\c chatwithpdf
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+Then restart the API — migrations will recreate all tables:
+
 ```powershell
-docker compose down -v
-docker compose up -d
 dotnet run --project ChatWithPdf.Api
 ```
 
@@ -596,9 +703,26 @@ services.AddScoped<IRagChatService, RagChatService>();
 Failed to connect to 127.0.0.1:5432
 ```
 
-- Ensure Docker is running: `docker compose up -d`
-- Check container status: `docker ps`
-- Verify connection string in `appsettings.json`
+- Ensure the PostgreSQL Windows service is running:
+  ```powershell
+  Get-Service -Name postgresql*
+  Start-Service postgresql-x64-17   # adjust version number if needed
+  ```
+- Verify the connection string in `appsettings.json` (host, port, username, password)
+- Test connectivity with psql:
+  ```powershell
+  psql -U postgres -d chatwithpdf -c "SELECT 1;"
+  ```
+
+### pgvector extension not found
+
+```
+ERROR: extension "vector" is not available
+```
+
+- pgvector is not installed on your PostgreSQL instance
+- Follow [Step 2 in Database Setup](#step-2--install-pgvector-extension)
+- Then run manually: `CREATE EXTENSION IF NOT EXISTS vector;`
 
 ### OpenAI API key missing
 
