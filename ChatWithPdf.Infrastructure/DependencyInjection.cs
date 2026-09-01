@@ -1,6 +1,7 @@
 using ChatWithPdf.Application.Contracts;
 using ChatWithPdf.Application.Options;
 using ChatWithPdf.Infrastructure.Chunking;
+using ChatWithPdf.Infrastructure.Documents;
 using ChatWithPdf.Infrastructure.Ingestion;
 using ChatWithPdf.Infrastructure.OpenAI;
 using ChatWithPdf.Infrastructure.Pdf;
@@ -45,6 +46,7 @@ public static class DependencyInjection
         services.AddScoped<IEmbeddingService, OpenAIEmbeddingService>();
         services.AddScoped<IVectorSearchService, PgVectorSearchService>();
         services.AddScoped<IDocumentIngestionService, DocumentIngestionService>();
+        services.AddScoped<IDocumentQueryService, DocumentQueryService>();
         services.AddScoped<IRagChatService, RagChatService>();
 
         return services;
