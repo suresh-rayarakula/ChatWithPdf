@@ -1,0 +1,277 @@
+@page "/"
+@rendermode InteractiveServer
+@inject ChatApiClient Api
+@implements IDisposable
+
+<PageTitle>Chat With PDF</PageTitle>
+
+<div class="workspace">
+    <aside class="sidebar">
+        <header class="sidebar-header">
+            <h1>Chat With PDF</h1>
+            <p>Upload notes and ask questions grounded in your documents.</p>
+        </header>
+
+        <section class="upload-panel">
+            <label class="upload-button @(isUploading ? "disabled" : "")">
+                <InputFile OnChange="OnFileSelected" accept=".pdf,application/pdf" disabled="@isUploading" />
+                @if (isUploading)
+                {
+                    <span>Indexing PDF…</span>
+                }
+                else
+                {
+                    <span>Upload PDF</span>
+                }
+            </label>
+            @if (isUploading)
+            {
+                <p class="hint">OCR and embeddings can take 1–2 minutes for handwritten scans.</p>
+            }
+            @if (!string.IsNullOrWhiteSpace(uploadMessage))
+            {
+                <p class="status @(uploadError ? "error" : "success")">@uploadMessage</p>
+            }
+        </section>
+
+        <section class="documents-panel">
+            <div class="panel-title">
+                <h2>Documents</h2>
+                <button type="button" class="ghost-button" @onclick="LoadDocumentsAsync" disabled="@isLoadingDocuments">
+                    Refresh
+                </button>
+            </div>
+
+            @if (isLoadingDocuments && documents.Count == 0)
+            {
+                <p class="hint">Loading documents…</p>
+            }
+            else if (documents.Count == 0)
+            {
+                <p class="hint">No documents yet. Upload a PDF to get started.</p>
+            }
+            else
+            {
+                <ul class="document-list">
+                    @foreach (var document in documents)
+                    {
+                        <li>
+                            <button type="button"
+                                    class="document-item @(selectedDocumentId == document.Id ? "selected" : "")"
+                                    @onclick="() => SelectDocument(document.Id)">
+                                <span class="document-name">@document.FileName</span>
+                                <span class="document-meta">@document.PageCount pages · @document.ChunkCount chunks</span>
+                            </button>
+                        </li>
+                    }
+                </ul>
+            }
+        </section>
+
+        <section class="scope-panel">
+            <label class="scope-toggle">
+                <input type="checkbox" @bind="searchAllDocuments" />
+                Search all documents
+            </label>
+            @if (!searchAllDocuments && selectedDocumentId is Guid selectedId)
+            {
+                <p class="hint">Scoped to selected document.</p>
+            }
+        </section>
+    </aside>
+
+    <main class="chat-panel">
+        <div class="messages" @ref="messagesContainer">
+            @if (messages.Count == 0)
+            {
+                <div class="empty-state">
+                    <h2>Ask anything about your PDFs</h2>
+                    <p>Try: “What is the difference between authentication and authorization?”</p>
+                </div>
+            }
+            else
+            {
+                @foreach (var message in messages)
+                {
+                    <article class="message @message.Role">
+                        <div class="message-role">@(message.Role == "user" ? "You" : "Assistant")</div>
+                        <div class="message-body">@message.Text</div>
+
+                        @if (message.Sources.Count > 0)
+                        {
+                            <details class="sources">
+                                <summary>@message.Sources.Count source@(message.Sources.Count == 1 ? "" : "s")</summary>
+                                <ul>
+                                    @foreach (var source in message.Sources)
+                                    {
+                                        <li>
+                                            <strong>@source.FileName</strong> · page @source.PageNumber
+                                            · similarity @source.Similarity.ToString("0.00")
+                                            <p>@source.Excerpt</p>
+                                        </li>
+                                    }
+                                </ul>
+                            </details>
+                        }
+                    </article>
+                }
+            }
+
+            @if (isAsking)
+            {
+                <article class="message assistant pending">
+                    <div class="message-role">Assistant</div>
+                    <div class="message-body">Thinking…</div>
+                </article>
+            }
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(chatError))
+        {
+            <p class="status error chat-error">@chatError</p>
+        }
+
+        <form class="composer" @onsubmit="AskQuestionAsync" @onsubmit:preventDefault="true">
+            <textarea @bind="question"
+                      @bind:event="oninput"
+                      placeholder="Ask a question about your documents…"
+                      rows="3"
+                      disabled="@isAsking"></textarea>
+            <button type="submit" disabled="@(isAsking || string.IsNullOrWhiteSpace(question))">Send</button>
+        </form>
+    </main>
+</div>
+
+@code {
+    private readonly List<ChatMessage> messages = [];
+    private readonly List<DocumentSummary> documents = [];
+    private ElementReference messagesContainer;
+
+    private string question = string.Empty;
+    private string? uploadMessage;
+    private string? chatError;
+    private bool uploadError;
+    private bool isUploading;
+    private bool isAsking;
+    private bool isLoadingDocuments;
+    private bool searchAllDocuments;
+    private Guid? selectedDocumentId;
+    private CancellationTokenSource? askCts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDocumentsAsync();
+    }
+
+    private async Task LoadDocumentsAsync()
+    {
+        isLoadingDocuments = true;
+        try
+        {
+            documents.Clear();
+            documents.AddRange(await Api.GetDocumentsAsync());
+            if (selectedDocumentId is null && documents.Count > 0)
+            {
+                selectedDocumentId = documents[0].Id;
+            }
+        }
+        catch (Exception ex)
+        {
+            uploadMessage = $"Could not load documents: {ex.Message}";
+            uploadError = true;
+        }
+        finally
+        {
+            isLoadingDocuments = false;
+        }
+    }
+
+    private async Task OnFileSelected(InputFileChangeEventArgs args)
+    {
+        var file = args.File;
+        if (file is null)
+        {
+            return;
+        }
+
+        isUploading = true;
+        uploadMessage = null;
+        uploadError = false;
+        chatError = null;
+
+        try
+        {
+            await using var stream = file.OpenReadStream(maxAllowedSize: 100 * 1024 * 1024);
+            var result = await Api.UploadAsync(stream, file.Name);
+            uploadMessage = $"Indexed {result.FileName} ({result.ChunkCount} chunks).";
+            await LoadDocumentsAsync();
+            selectedDocumentId = result.DocumentId;
+            searchAllDocuments = false;
+        }
+        catch (Exception ex)
+        {
+            uploadMessage = ex.Message;
+            uploadError = true;
+        }
+        finally
+        {
+            isUploading = false;
+        }
+    }
+
+    private void SelectDocument(Guid documentId)
+    {
+        selectedDocumentId = documentId;
+        searchAllDocuments = false;
+    }
+
+    private async Task AskQuestionAsync()
+    {
+        if (string.IsNullOrWhiteSpace(question) || isAsking)
+        {
+            return;
+        }
+
+        if (!searchAllDocuments && selectedDocumentId is null)
+        {
+            chatError = "Select a document or enable search all documents.";
+            return;
+        }
+
+        var prompt = question.Trim();
+        question = string.Empty;
+        chatError = null;
+        messages.Add(new ChatMessage("user", prompt, []));
+
+        isAsking = true;
+        askCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+
+        try
+        {
+            var answer = await Api.AskAsync(
+                prompt,
+                searchAllDocuments ? null : selectedDocumentId,
+                askCts.Token);
+
+            messages.Add(new ChatMessage("assistant", answer.Answer, answer.Sources.ToList()));
+        }
+        catch (Exception ex)
+        {
+            chatError = ex.Message;
+        }
+        finally
+        {
+            isAsking = false;
+            askCts.Dispose();
+            askCts = null;
+        }
+    }
+
+    public void Dispose()
+    {
+        askCts?.Cancel();
+        askCts?.Dispose();
+    }
+
+    private sealed record ChatMessage(string Role, string Text, List<SourceCitation> Sources);
+}
