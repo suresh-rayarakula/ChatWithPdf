@@ -21,7 +21,8 @@ public sealed class DocumentIngestionService(
         var pages = await pdfTextExtractor.ExtractAsync(pdfStream, cancellationToken);
         if (pages.Count == 0)
         {
-            throw new InvalidOperationException("No extractable text was found in the PDF.");
+            throw new InvalidOperationException(
+                "No extractable text was found in the PDF. Try a clearer scan or a text-based PDF.");
         }
 
         var textChunks = pages

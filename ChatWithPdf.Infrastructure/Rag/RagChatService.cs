@@ -1,17 +1,19 @@
 using System.Text;
 using ChatWithPdf.Application.Contracts;
 using ChatWithPdf.Application.Options;
+using Google.GenAI;
+using Google.GenAI.Types;
 using Microsoft.Extensions.Options;
-using OpenAI.Chat;
 
 namespace ChatWithPdf.Infrastructure.Rag;
 
 public sealed class RagChatService(
     IEmbeddingService embeddingService,
     IVectorSearchService vectorSearchService,
-    ChatClient chatClient,
+    Client geminiClient,
     IOptions<RagOptions> options) : IRagChatService
 {
+    private readonly Client _geminiClient = geminiClient;
     private readonly RagOptions _options = options.Value;
 
     public async Task<ChatAnswer> AskAsync(ChatQuestion question, CancellationToken cancellationToken = default)
@@ -36,27 +38,38 @@ public sealed class RagChatService(
         }
 
         var context = BuildContextBlock(retrievedChunks);
-        var messages = new List<ChatMessage>
-        {
-            new SystemChatMessage(
-                """
-                You are a helpful assistant that answers questions using only the provided context.
-                If the answer is not in the context, say you do not know based on the uploaded documents.
-                Keep answers concise and grounded in the source material.
-                When useful, mention the page number from the source.
-                """),
-            new UserChatMessage(
-                $"""
-                Context:
-                {context}
+        var response = await _geminiClient.Models.GenerateContentAsync(
+            model: _options.ChatModel,
+            contents:
+            $"""
+             Context:
+             {context}
 
-                Question:
-                {question.Question}
-                """)
-        };
+             Question:
+             {question.Question}
+             """,
+            config: new GenerateContentConfig
+            {
+                SystemInstruction = new Content
+                {
+                    Parts =
+                    [
+                        new Part
+                        {
+                            Text =
+                                """
+                                You are a helpful assistant that answers questions using only the provided context.
+                                If the answer is not in the context, say you do not know based on the uploaded documents.
+                                Keep answers concise and grounded in the source material.
+                                When useful, mention the page number from the source.
+                                """
+                        }
+                    ]
+                }
+            },
+            cancellationToken: cancellationToken);
 
-        var completion = await chatClient.CompleteChatAsync(messages, cancellationToken: cancellationToken);
-        var answer = completion.Value.Content.FirstOrDefault()?.Text
+        var answer = response.Candidates?.FirstOrDefault()?.Content?.Parts?.FirstOrDefault()?.Text
             ?? "I could not generate an answer.";
 
         var sources = retrievedChunks
