@@ -1,8 +1,8 @@
 # ChatWithPdf — RAG Application with .NET
 
-A **Chat with PDF** application built from scratch to demonstrate a real Retrieval-Augmented Generation (RAG) pipeline. Upload a PDF, ask a question, and receive a grounded answer with source citations (page number and chunk).
+A **Chat with PDF** application built from scratch to demonstrate a real Retrieval-Augmented Generation (RAG) pipeline. Upload a PDF (including scanned or handwritten notes), ask a question, and receive a grounded answer with source citations (page number and chunk).
 
-This project is designed for hands-on learning: PDF extraction, chunking, embeddings, vector search, prompt construction, and LLM integration — all wired together in a layered .NET solution.
+This project is designed for hands-on learning: PDF extraction, OCR fallback, chunking, embeddings, vector search, prompt construction, and LLM integration — all wired together in a layered .NET solution with a Blazor Server UI.
 
 ---
 
@@ -17,6 +17,7 @@ This project is designed for hands-on learning: PDF extraction, chunking, embedd
 - [Getting Started](#getting-started)
 - [Configuration](#configuration)
 - [Running the Application](#running-the-application)
+- [Using the Blazor UI](#using-the-blazor-ui)
 - [API Reference](#api-reference)
 - [RAG Pipeline Explained](#rag-pipeline-explained)
 - [Database Schema](#database-schema)
@@ -31,18 +32,19 @@ This project is designed for hands-on learning: PDF extraction, chunking, embedd
 
 ### What this application does
 
-1. **Upload** a text-based PDF document
-2. **Extract** text page by page
+1. **Upload** a PDF (text-based, scanned, or handwritten)
+2. **Extract** text page by page (PdfPig first; Gemini OCR if no text is found)
 3. **Split** text into overlapping chunks
-4. **Generate** vector embeddings via OpenAI
-5. **Store** chunks and embeddings in PostgreSQL with pgvector
+4. **Generate** vector embeddings via Google Gemini (`gemini-embedding-001`)
+5. **Store** chunks and embeddings in PostgreSQL with pgvector (`vector(768)`)
 6. **Search** for the most relevant chunks when a user asks a question
-7. **Generate** a grounded answer using an LLM with retrieved context
+7. **Generate** a grounded answer using Gemini (`gemini-3.6-flash`) with retrieved context
 8. **Return** the answer along with source citations (file, page, excerpt, similarity score)
+9. **Chat in the browser** via an integrated Blazor Server UI
 
 ### What makes this "real" RAG
 
-The LLM never sees the full PDF. It only receives the **top-K most semantically similar chunks** retrieved from the vector database. Answers are constrained by a system prompt to stay within that context.
+The LLM never sees the full PDF at chat time. It only receives the **top-K most semantically similar chunks** retrieved from the vector database. Answers are constrained by a system prompt to stay within that context.
 
 ---
 
@@ -54,13 +56,13 @@ The LLM never sees the full PDF. It only receives the **top-K most semantically 
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                        PHASE 1: INDEXING (Upload)                       │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  PDF Upload → Extract Text → Chunk Text → Embed Chunks → Store in DB   │
+│  PDF Upload → Extract / OCR → Chunk Text → Embed Chunks → Store in DB  │
 └─────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        PHASE 2: QUERY (Chat)                              │
+│                        PHASE 2: QUERY (Chat)                            │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  Question → Embed Question → Vector Search → Build Prompt → LLM Answer   │
+│  Question → Embed Question → Vector Search → Build Prompt → LLM Answer  │
 │                                    ↓                                    │
 │                          Return Answer + Sources                        │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -71,7 +73,7 @@ The LLM never sees the full PDF. It only receives the **top-K most semantically 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  ChatWithPdf.Api                                         │
-│  Controllers, HTTP contracts, startup                    │
+│  Controllers, Blazor UI, HTTP contracts, startup         │
 └──────────────────────────┬───────────────────────────────┘
                            │ depends on
 ┌──────────────────────────▼───────────────────────────────┐
@@ -86,7 +88,7 @@ The LLM never sees the full PDF. It only receives the **top-K most semantically 
 
 ┌──────────────────────────────────────────────────────────┐
 │  ChatWithPdf.Infrastructure                              │
-│  EF Core, OpenAI, PdfPig, pgvector, service implementations│
+│  EF Core, Google.GenAI, PdfPig, pgvector, services       │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -98,18 +100,29 @@ The LLM never sees the full PDF. It only receives the **top-K most semantically 
 
 ```
 ChatWithPdf/
-├── ChatWithPdf.sln
+├── ChatWithPdf.slnx
 ├── README.md
 │
-├── ChatWithPdf.Api/                    # Web API (entry point)
+├── ChatWithPdf.Api/                    # Web API + Blazor UI (entry point)
+│   ├── Components/
+│   │   ├── App.razor
+│   │   ├── Routes.razor
+│   │   ├── Layout/
+│   │   │   └── MainLayout.razor
+│   │   └── Pages/
+│   │       └── Home.razor              # Upload + chat UI
 │   ├── Controllers/
 │   │   ├── DocumentsController.cs      # Upload + list documents
 │   │   └── ChatController.cs           # RAG Q&A
 │   ├── Contracts/
 │   │   └── Requests/
 │   │       └── ChatRequest.cs
+│   ├── Services/
+│   │   └── ChatApiClient.cs            # HttpClient used by Blazor UI
 │   ├── Extensions/
 │   │   └── WebApplicationExtensions.cs # DB migration on startup
+│   ├── wwwroot/
+│   │   └── app.css
 │   ├── Properties/
 │   │   └── launchSettings.json
 │   ├── Program.cs
@@ -138,12 +151,13 @@ ChatWithPdf/
     │   └── SlidingWindowChunkingService.cs
     ├── Documents/
     │   └── DocumentQueryService.cs
+    ├── Gemini/
+    │   └── GeminiEmbeddingService.cs
     ├── Ingestion/
     │   └── DocumentIngestionService.cs
-    ├── OpenAI/
-    │   └── OpenAIEmbeddingService.cs
     ├── Pdf/
-    │   └── PdfPigTextExtractor.cs
+    │   ├── PdfPigTextExtractor.cs
+    │   └── FallbackPdfTextExtractor.cs # PdfPig → Gemini OCR fallback
     ├── Persistence/
     │   ├── AppDbContext.cs
     │   └── Migrations/
@@ -161,12 +175,13 @@ ChatWithPdf/
 | Layer | Technology |
 |-------|------------|
 | Runtime | .NET 10 |
-| Web framework | ASP.NET Core Web API |
+| Web framework | ASP.NET Core Web API + Blazor Server |
 | ORM | Entity Framework Core 10 |
 | Database | PostgreSQL 17 |
 | Vector search | pgvector + HNSW index |
 | PDF parsing | UglyToad.PdfPig |
-| Embeddings & chat | OpenAI API (`text-embedding-3-small`, `gpt-4o-mini`) |
+| OCR fallback | Gemini multimodal PDF understanding |
+| Embeddings & chat | Google Gemini API (`gemini-embedding-001`, `gemini-3.6-flash`) |
 
 ### Key NuGet packages
 
@@ -174,8 +189,8 @@ ChatWithPdf/
 |---------|---------|---------|
 | `Npgsql.EntityFrameworkCore.PostgreSQL` | Infrastructure | PostgreSQL provider |
 | `Pgvector.EntityFrameworkCore` | Infrastructure | Vector column + cosine distance |
-| `OpenAI` | Infrastructure | Embeddings and chat completions |
-| `UglyToad.PdfPig` | Infrastructure | PDF text extraction |
+| `Google.GenAI` | Infrastructure | Embeddings, chat, OCR |
+| `UglyToad.PdfPig` | Infrastructure | Native PDF text extraction |
 | `Microsoft.EntityFrameworkCore.Design` | Api, Infrastructure | EF Core migrations |
 
 ---
@@ -191,7 +206,7 @@ Install the following before running the project:
 
 2. **PostgreSQL 15+ with pgvector** — see [Database Setup](#database-setup-postgresql--pgvector) below
 
-3. **OpenAI API key** — from [platform.openai.com](https://platform.openai.com/)
+3. **Gemini API key** — from [Google AI Studio](https://aistudio.google.com/apikey)
 
 4. **EF Core CLI tools** (optional, for manual migrations):
    ```powershell
@@ -318,17 +333,17 @@ cd "D:\Projects\AI RAG"
 
 Complete the [Database Setup](#database-setup-postgresql--pgvector) steps above before continuing.
 
-### 3. Configure OpenAI API key
+### 3. Configure Gemini API key
 
 **Recommended:** use .NET User Secrets (keeps the key out of source control).
 
 ```powershell
 cd ChatWithPdf.Api
 dotnet user-secrets init
-dotnet user-secrets set "OpenAI:ApiKey" "sk-your-openai-api-key-here"
+dotnet user-secrets set "Gemini:ApiKey" "your-gemini-api-key-here"
 ```
 
-Alternatively, edit `ChatWithPdf.Api/appsettings.json` (do not commit real keys).
+Alternatively, set `Gemini:ApiKey` in `ChatWithPdf.Api/appsettings.Development.json` (do not commit real keys).
 
 ### 4. Build the solution
 
@@ -337,7 +352,7 @@ cd ..
 dotnet build
 ```
 
-### 5. Run the API
+### 5. Run the app
 
 ```powershell
 dotnet run --project ChatWithPdf.Api
@@ -347,10 +362,12 @@ On startup, the application automatically applies EF Core migrations to the data
 
 Default URLs (from `launchSettings.json`):
 
-| Profile | URL |
-|---------|-----|
-| HTTPS | `https://localhost:7094` |
-| HTTP | `http://localhost:5271` |
+| Profile | URL | Purpose |
+|---------|-----|---------|
+| HTTPS | `https://localhost:7094` | Blazor UI + API |
+| HTTP | `http://localhost:5271` | Blazor UI + API |
+
+Open **https://localhost:7094** in a browser for the UI, or call `/api/...` from Postman/curl.
 
 ---
 
@@ -361,18 +378,18 @@ All settings live in `ChatWithPdf.Api/appsettings.json`:
 ```json
 {
   "ConnectionStrings": {
-    "DefaultConnection": "Host=localhost;Port=5432;Database=chatwithpdf;Username=postgres;Password=postgres"
+    "DefaultConnection": "Host=localhost;Port=5432;Database=chatwithpdf;Username=postgres;Password=YOUR_PASSWORD"
   },
-  "OpenAI": {
-    "ApiKey": "YOUR_OPENAI_API_KEY"
+  "Gemini": {
+    "ApiKey": "YOUR_GEMINI_API_KEY"
   },
   "Rag": {
     "ChunkSize": 800,
     "ChunkOverlap": 150,
     "TopK": 5,
-    "EmbeddingModel": "text-embedding-3-small",
-    "ChatModel": "gpt-4o-mini",
-    "EmbeddingDimensions": 1536
+    "EmbeddingModel": "gemini-embedding-001",
+    "ChatModel": "gemini-3.6-flash",
+    "EmbeddingDimensions": 768
   }
 }
 ```
@@ -381,14 +398,15 @@ All settings live in `ChatWithPdf.Api/appsettings.json`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
+| `Gemini:ApiKey` | — | Google Gemini Developer API key |
 | `Rag:ChunkSize` | `800` | Maximum characters per chunk |
 | `Rag:ChunkOverlap` | `150` | Overlap between consecutive chunks |
 | `Rag:TopK` | `5` | Number of chunks retrieved per question |
-| `Rag:EmbeddingModel` | `text-embedding-3-small` | OpenAI embedding model |
-| `Rag:ChatModel` | `gpt-4o-mini` | OpenAI chat model |
-| `Rag:EmbeddingDimensions` | `1536` | Vector size — **must match** DB column `vector(1536)` |
+| `Rag:EmbeddingModel` | `gemini-embedding-001` | Gemini embedding model |
+| `Rag:ChatModel` | `gemini-3.6-flash` | Gemini chat / OCR model |
+| `Rag:EmbeddingDimensions` | `768` | Vector size — **must match** DB column `vector(768)` |
 
-> **Important:** If you change `EmbeddingDimensions` or `EmbeddingModel`, you must recreate the database migration and re-index all documents.
+> **Important:** If you change `EmbeddingDimensions` or `EmbeddingModel`, you must update the database migration and **re-upload all documents**. Existing OpenAI (`1536`) or older Gemini embeddings are not compatible.
 
 ---
 
@@ -400,7 +418,7 @@ All settings live in `ChatWithPdf.Api/appsettings.json`:
 # 1. Ensure PostgreSQL is running (Windows service)
 Get-Service -Name postgresql*
 
-# 2. Build and run the API
+# 2. Build and run the API + UI
 cd "D:\Projects\AI RAG"
 dotnet build
 dotnet run --project ChatWithPdf.Api
@@ -408,9 +426,16 @@ dotnet run --project ChatWithPdf.Api
 
 On first run, EF Core creates all tables and indexes automatically.
 
+### Test with the Blazor UI
+
+1. Open https://localhost:7094
+2. Upload a PDF from the left panel
+3. Select the document
+4. Ask a question in the chat panel
+
 ### Test with the included HTTP file
 
-Open `ChatWithPdf.Api/ChatWithPdf.Api.http` in Visual Studio or Rider and run the requests.
+Open `ChatWithPdf.Api/ChatWithPdf.Api.http` in Visual Studio, Rider, or Cursor and run the requests.
 
 ### Test with curl (PowerShell)
 
@@ -443,6 +468,27 @@ curl.exe -k -X POST "https://localhost:7094/api/chat" `
   -d "{\"question\": \"Summarize the refund policy\", \"documentId\": \"YOUR-DOCUMENT-GUID\"}"
 ```
 
+> Tip: Handwritten or scanned PDFs may take **30–120 seconds** to upload because Gemini OCR runs before embeddings.
+
+---
+
+## Using the Blazor UI
+
+The Blazor Server UI is hosted inside `ChatWithPdf.Api` (same process and origin as the API — no CORS setup needed).
+
+| Area | Features |
+|------|----------|
+| Left sidebar | Upload PDF, list documents, select scope, search-all toggle |
+| Chat panel | Conversation thread, source citations, question composer |
+| Upload | Supports PDFs up to 100 MB; shows progress messaging for OCR/indexing |
+
+### Typical UI flow
+
+1. Click **Upload PDF**
+2. Wait until indexing finishes (`chunkCount > 0`)
+3. Select the document (or enable **Search all documents**)
+4. Ask a question and expand **sources** under the answer
+
 ---
 
 ## API Reference
@@ -472,7 +518,7 @@ Upload and index a PDF file.
 | Status | Reason |
 |--------|--------|
 | `400` | Empty file or non-PDF file |
-| `500` | No extractable text, OpenAI failure, DB error |
+| `500` | No extractable text, Gemini failure, DB error |
 
 ---
 
@@ -540,21 +586,27 @@ Ask a question against indexed documents.
 
 | Step | Service | What happens |
 |------|---------|--------------|
-| 1 | `PdfPigTextExtractor` | Reads each PDF page and extracts plain text |
+| 1 | `FallbackPdfTextExtractor` | Tries PdfPig first; if no text, sends the PDF to Gemini for OCR |
 | 2 | `SlidingWindowChunkingService` | Splits page text into ~800-char chunks with 150-char overlap |
-| 3 | `OpenAIEmbeddingService` | Sends all chunk texts to OpenAI in a batch embedding call |
-| 4 | `DocumentIngestionService` | Saves `Document` + `DocumentChunk` rows with `vector(1536)` embeddings |
+| 3 | `GeminiEmbeddingService` | Embeds each chunk with `gemini-embedding-001` (`RETRIEVAL_DOCUMENT`) |
+| 4 | `DocumentIngestionService` | Saves `Document` + `DocumentChunk` rows with `vector(768)` embeddings |
 | 5 | PostgreSQL + pgvector | Stores vectors; HNSW index enables fast cosine similarity search |
 
 ### Phase 2: Query (triggered by chat)
 
 | Step | Service | What happens |
 |------|---------|--------------|
-| 1 | `OpenAIEmbeddingService` | Embeds the user's question into a 1536-dim vector |
+| 1 | `GeminiEmbeddingService` | Embeds the user's question (`RETRIEVAL_QUERY`) into a 768-dim vector |
 | 2 | `PgVectorSearchService` | Finds top-K chunks by cosine distance (optionally filtered by `documentId`) |
 | 3 | `RagChatService` | Builds a prompt with retrieved context + system instructions |
-| 4 | OpenAI Chat API | Generates a grounded answer |
-| 5 | API response | Returns answer + source citations with page numbers and similarity scores |
+| 4 | Gemini Chat (`gemini-3.6-flash`) | Generates a grounded answer |
+| 5 | API / Blazor UI | Returns answer + source citations with page numbers and similarity scores |
+
+### Text extraction strategy
+
+1. **PdfPig** extracts embedded text from digital PDFs (fast, free).
+2. If no text is found (scanned/handwritten PDFs), **Gemini OCR** reads the PDF as multimodal input and returns page-marked text.
+3. Chunking and embedding proceed the same way for both paths.
 
 ### Chunking strategy
 
@@ -583,7 +635,7 @@ Ask a question against indexed documents.
 | `FileName` | `varchar(500)` | Original file name |
 | `ContentType` | `varchar(200)` | MIME type |
 | `FileSizeBytes` | `bigint` | File size |
-| `PageCount` | `int` | Number of pages with text |
+| `PageCount` | `int` | Number of pages with extracted text |
 | `UploadedAt` | `timestamptz` | Upload timestamp |
 
 **`Chunks`**
@@ -595,7 +647,7 @@ Ask a question against indexed documents.
 | `PageNumber` | `int` | Source page in PDF |
 | `ChunkIndex` | `int` | Chunk order within page |
 | `Content` | `text` | Chunk text |
-| `Embedding` | `vector(1536)` | OpenAI embedding |
+| `Embedding` | `vector(768)` | Gemini embedding |
 | `TokenEstimate` | `int` | Rough token count |
 
 ### Indexes
@@ -613,6 +665,15 @@ CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
 Applied automatically via EF Core migration.
+
+### Migrations of note
+
+| Migration | Purpose |
+|-----------|---------|
+| `20260901175559_InitialCreate` | Creates `Documents` / `Chunks` with `vector(1536)` (original OpenAI layout) |
+| `20260903020000_UpdateEmbeddingDimensionsForGemini` | Clears embeddings and switches column to `vector(768)` for Gemini |
+
+After switching providers or dimensions, **re-upload PDFs** so chunks are re-embedded.
 
 ---
 
@@ -668,20 +729,28 @@ dotnet run --project ChatWithPdf.Api
 2. `dotnet build`
 3. If entities changed → add migration
 4. `dotnet run --project ChatWithPdf.Api`
-5. Test via `.http` file or curl
+5. Test via Blazor UI, `.http` file, Postman, or curl
 
 ### Service registration
 
 All infrastructure services are registered in `ChatWithPdf.Infrastructure/DependencyInjection.cs`:
 
 ```csharp
-services.AddScoped<IPdfTextExtractor, PdfPigTextExtractor>();
+services.AddScoped<IPdfTextExtractor, FallbackPdfTextExtractor>();
 services.AddScoped<IChunkingService, SlidingWindowChunkingService>();
-services.AddScoped<IEmbeddingService, OpenAIEmbeddingService>();
+services.AddScoped<IEmbeddingService, GeminiEmbeddingService>();
 services.AddScoped<IVectorSearchService, PgVectorSearchService>();
 services.AddScoped<IDocumentIngestionService, DocumentIngestionService>();
 services.AddScoped<IDocumentQueryService, DocumentQueryService>();
 services.AddScoped<IRagChatService, RagChatService>();
+```
+
+Blazor registration (in `Program.cs`):
+
+```csharp
+builder.Services.AddRazorComponents()
+    .AddInteractiveServerComponents();
+builder.Services.AddHttpClient<ChatApiClient>();
 ```
 
 ### Adding a new feature (example: chat history)
@@ -690,7 +759,7 @@ services.AddScoped<IRagChatService, RagChatService>();
 2. Add interface + DTOs in `ChatWithPdf.Application`
 3. Implement service in `ChatWithPdf.Infrastructure`
 4. Register in `DependencyInjection.cs`
-5. Add controller endpoint in `ChatWithPdf.Api`
+5. Add controller endpoint and/or Blazor UI in `ChatWithPdf.Api`
 6. Create and apply EF Core migration
 
 ---
@@ -724,14 +793,27 @@ ERROR: extension "vector" is not available
 - Follow [Step 2 in Database Setup](#step-2--install-pgvector-extension)
 - Then run manually: `CREATE EXTENSION IF NOT EXISTS vector;`
 
-### OpenAI API key missing
+### Gemini API key missing
 
 ```
-OpenAI:ApiKey is missing.
+Gemini:ApiKey is missing.
 ```
 
-- Set via user secrets: `dotnet user-secrets set "OpenAI:ApiKey" "sk-..."`
-- Or update `appsettings.json`
+- Set via user secrets: `dotnet user-secrets set "Gemini:ApiKey" "your-key"`
+- Or update `appsettings.Development.json` / `appsettings.json`
+- Restart the app after changing the key
+
+### Gemini model unavailable / not found
+
+```
+This model models/gemini-2.0-flash is no longer available
+models/text-embedding-004 is not found ... for embedContent
+```
+
+- Use the current models in config:
+  - Chat / OCR: `gemini-3.6-flash`
+  - Embeddings: `gemini-embedding-001`
+- Model names change over time; check [Gemini API docs](https://ai.google.dev/gemini-api/docs/models) if errors persist
 
 ### No extractable text in PDF
 
@@ -739,18 +821,19 @@ OpenAI:ApiKey is missing.
 No extractable text was found in the PDF.
 ```
 
-- The PDF may be scanned (image-only). PdfPig only extracts embedded text.
-- Solution: use OCR (e.g. Azure Document Intelligence, Tesseract) — not yet implemented.
+- PdfPig found no embedded text **and** Gemini OCR returned empty content
+- Try a clearer scan, better lighting, or a text-based PDF
+- Confirm the Gemini key works and the chat model supports document input
 
 ### Vector dimension mismatch
 
 ```
-ERROR: expected 1536 dimensions, not N
+ERROR: expected 768 dimensions, not N
 ```
 
-- `Rag:EmbeddingDimensions` must match the DB column and the embedding model output.
-- Default: `1536` for `text-embedding-3-small`.
-- Fix: align config, recreate migration, re-upload documents.
+- `Rag:EmbeddingDimensions` must match the DB column and the embedding model output
+- Default: `768` for `gemini-embedding-001`
+- Fix: align config, ensure the Gemini dimensions migration ran, re-upload documents
 
 ### InvalidCastException writing Vector
 
@@ -758,14 +841,19 @@ ERROR: expected 1536 dimensions, not N
 Writing values of 'Pgvector.Vector' is not supported
 ```
 
-- Ensure `UseVector()` is called in `UseNpgsql()` configuration.
-- If using a custom `NpgsqlDataSourceBuilder`, call `dataSourceBuilder.UseVector()` before `Build()`.
+- Ensure `UseVector()` is called in `UseNpgsql()` configuration
+- If using a custom `NpgsqlDataSourceBuilder`, call `dataSourceBuilder.UseVector()` before `Build()`
 
 ### Upload works but chat returns no results
 
 - Confirm documents appear in `GET /api/documents` with `chunkCount > 0`
 - Check that `documentId` in chat request matches an uploaded document (if scoped)
-- Try lowering `TopK` or re-uploading with a text-rich PDF
+- Re-upload documents after switching from OpenAI to Gemini (old embeddings were cleared)
+
+### UI loads but API calls fail / file lock on build
+
+- Stop any already-running `ChatWithPdf.Api` process before rebuilding
+- Blazor UI and API share the same host — use https://localhost:7094 for both
 
 ### EF Core tools version warning
 
@@ -785,13 +873,13 @@ Suggested next steps for extending the project:
 
 | Phase | Feature | Learning goal |
 |-------|---------|---------------|
-| 1 | Blazor or React UI | File upload UX, streaming responses |
-| 2 | Chat history | Stateful conversations |
+| 1 | Chat history | Stateful conversations across sessions |
+| 2 | Streaming answers | Token-by-token Blazor UI updates |
 | 3 | Background ingestion | Large PDFs via queue (Hangfire) |
 | 4 | Hybrid search | BM25 + vector retrieval |
 | 5 | Re-ranking | Improve retrieval precision |
-| 6 | OCR support | Scanned PDF handling |
-| 7 | Evaluation harness | Measure answer quality objectively |
+| 6 | Evaluation harness | Measure answer quality objectively |
+| 7 | Auth / multi-user | Protect uploads and conversations |
 
 ---
 
